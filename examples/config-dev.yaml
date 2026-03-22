@@ -240,8 +240,8 @@ staticPasswords:
   userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"
 
 # Settings for signing JWT tokens. Available options:
-# - "local": use local keys (RS256 by default, ES256 opt-in)
-# - "vault": use Vault Transit backend (RSA, EC, and Ed25519 keys supported)
+# - "local": use local keys (supported algorithms: RS256 (default), ES256)
+# - "vault": use Vault Transit backend (RSA, ECDSA, and Ed25519 keys supported)
 signer:
   type: local
   config:

@@ -99,7 +99,7 @@ web:
 #   type: local
 #   config:
 #     keysRotationPeriod: "6h"
-#     algorithm: "RS256" # use "ES256" to reduce JWT size if clients support it
+#     algorithm: "RS256" # supported values: "RS256" (default) and "ES256"
 
 # OAuth2 configuration
 # oauth2:

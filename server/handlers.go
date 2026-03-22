@@ -2,10 +2,7 @@ package server
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/hmac"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -28,6 +25,7 @@ import (
 	"github.com/dexidp/dex/connector"
 	"github.com/dexidp/dex/pkg/featureflags"
 	"github.com/dexidp/dex/server/internal"
+	"github.com/dexidp/dex/server/signer"
 	"github.com/dexidp/dex/storage"
 )
 
@@ -94,40 +92,6 @@ type discovery struct {
 	Claims            []string `json:"claims_supported"`
 }
 
-func discoverySigningAlgorithmFromJWK(jwk *jose.JSONWebKey) (jose.SignatureAlgorithm, bool) {
-	if jwk == nil {
-		return "", false
-	}
-	if jwk.Algorithm != "" {
-		return jose.SignatureAlgorithm(jwk.Algorithm), true
-	}
-
-	switch key := jwk.Key.(type) {
-	case *rsa.PublicKey, *rsa.PrivateKey:
-		return jose.RS256, true
-	case *ecdsa.PublicKey:
-		switch key.Params() {
-		case elliptic.P256().Params():
-			return jose.ES256, true
-		case elliptic.P384().Params():
-			return jose.ES384, true
-		case elliptic.P521().Params():
-			return jose.ES512, true
-		}
-	case *ecdsa.PrivateKey:
-		switch key.Params() {
-		case elliptic.P256().Params():
-			return jose.ES256, true
-		case elliptic.P384().Params():
-			return jose.ES384, true
-		case elliptic.P521().Params():
-			return jose.ES512, true
-		}
-	}
-
-	return "", false
-}
-
 func (s *Server) discoverySigningAlgorithms(ctx context.Context) []string {
 	algs := make([]string, 0, 2)
 	seen := map[string]struct{}{}
@@ -156,7 +120,7 @@ func (s *Server) discoverySigningAlgorithms(ctx context.Context) []string {
 		s.logger.Error("failed to get validation keys for discovery", "err", err)
 	} else {
 		for _, key := range keys {
-			if alg, ok := discoverySigningAlgorithmFromJWK(key); ok {
+			if alg, err := signer.SignatureAlgorithmFromJWK(key); err == nil {
 				add(alg)
 			}
 		}

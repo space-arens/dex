@@ -34,7 +34,7 @@ type rotationStrategy struct {
 	// Algorithm used for newly generated signing keys.
 	algorithm jose.SignatureAlgorithm
 
-	// Local signer keys can be RSA or EC depending on the configured algorithm.
+	// Local signer keys can be RSA or ECDSA depending on the configured algorithm.
 	key func() (crypto.Signer, error)
 }
 
@@ -49,8 +49,7 @@ func defaultRotationStrategy(rotationFrequency, idTokenValidFor time.Duration) r
 }
 
 func newRotationStrategy(rotationFrequency, idTokenValidFor time.Duration, algorithm jose.SignatureAlgorithm) (rotationStrategy, error) {
-	switch algorithm {
-	case jose.RS256:
+	if algorithm == jose.RS256 {
 		return rotationStrategy{
 			rotationFrequency: rotationFrequency,
 			idTokenValidFor:   idTokenValidFor,
@@ -59,7 +58,8 @@ func newRotationStrategy(rotationFrequency, idTokenValidFor time.Duration, algor
 				return rsa.GenerateKey(rand.Reader, 2048)
 			},
 		}, nil
-	case jose.ES256:
+	}
+	if algorithm == jose.ES256 {
 		return rotationStrategy{
 			rotationFrequency: rotationFrequency,
 			idTokenValidFor:   idTokenValidFor,
@@ -68,15 +68,14 @@ func newRotationStrategy(rotationFrequency, idTokenValidFor time.Duration, algor
 				return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 			},
 		}, nil
-	default:
-		return rotationStrategy{}, fmt.Errorf("unsupported local signer algorithm %q", algorithm)
 	}
+	return rotationStrategy{}, fmt.Errorf("unsupported local signer algorithm %q", algorithm)
 }
 
 func newJWKPair(key crypto.Signer, algorithm jose.SignatureAlgorithm) (priv, pub *jose.JSONWebKey, err error) {
 	b := make([]byte, 20)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("generate key id: %v", err)
 	}
 	keyID := hex.EncodeToString(b)
 

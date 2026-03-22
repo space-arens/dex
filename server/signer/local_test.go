@@ -43,23 +43,23 @@ func newTestLocalSigner(t *testing.T, config LocalConfig, s storage.Storage, now
 func newTestJWKPair(t *testing.T, alg jose.SignatureAlgorithm) (*jose.JSONWebKey, *jose.JSONWebKey) {
 	t.Helper()
 
-	switch alg {
-	case jose.RS256:
+	if alg == jose.RS256 {
 		key, err := rsa.GenerateKey(rand.Reader, 2048)
 		require.NoError(t, err)
 		priv, pub, err := newJWKPair(key, alg)
 		require.NoError(t, err)
 		return priv, pub
-	case jose.ES256:
+	}
+	if alg == jose.ES256 {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		require.NoError(t, err)
 		priv, pub, err := newJWKPair(key, alg)
 		require.NoError(t, err)
 		return priv, pub
-	default:
-		t.Fatalf("unsupported test algorithm %s", alg)
-		return nil, nil
 	}
+
+	t.Fatalf("unsupported test algorithm %s", alg)
+	return nil, nil
 }
 
 func requireVerifiedByAnyKey(t *testing.T, token string, alg jose.SignatureAlgorithm, keys []*jose.JSONWebKey, wantPayload []byte) {

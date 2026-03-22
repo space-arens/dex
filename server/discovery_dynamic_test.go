@@ -14,11 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/stretchr/testify/require"
+
 	api "github.com/dexidp/dex/api/v2"
 	"github.com/dexidp/dex/server/signer"
 	"github.com/dexidp/dex/storage"
-	"github.com/go-jose/go-jose/v4"
-	"github.com/stretchr/testify/require"
 )
 
 type mutableDiscoverySigner struct {
