@@ -2,6 +2,9 @@ package signer
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/hex"
@@ -28,21 +31,66 @@ type rotationStrategy struct {
 	// signatures?
 	idTokenValidFor time.Duration
 
-	// Keys are always RSA keys. Though cryptopasta recommends ECDSA keys, not every
-	// client may support these (e.g. github.com/coreos/go-oidc/oidc).
-	key func() (*rsa.PrivateKey, error)
+	// Algorithm used for newly generated signing keys.
+	algorithm jose.SignatureAlgorithm
+
+	// Local signer keys can be RSA or EC depending on the configured algorithm.
+	key func() (crypto.Signer, error)
 }
 
 // defaultRotationStrategy returns a strategy which rotates keys every provided period,
 // holding onto the public parts for some specified amount of time.
 func defaultRotationStrategy(rotationFrequency, idTokenValidFor time.Duration) rotationStrategy {
-	return rotationStrategy{
-		rotationFrequency: rotationFrequency,
-		idTokenValidFor:   idTokenValidFor,
-		key: func() (*rsa.PrivateKey, error) {
-			return rsa.GenerateKey(rand.Reader, 2048)
-		},
+	strategy, err := newRotationStrategy(rotationFrequency, idTokenValidFor, jose.RS256)
+	if err != nil {
+		panic(err)
 	}
+	return strategy
+}
+
+func newRotationStrategy(rotationFrequency, idTokenValidFor time.Duration, algorithm jose.SignatureAlgorithm) (rotationStrategy, error) {
+	switch algorithm {
+	case jose.RS256:
+		return rotationStrategy{
+			rotationFrequency: rotationFrequency,
+			idTokenValidFor:   idTokenValidFor,
+			algorithm:         algorithm,
+			key: func() (crypto.Signer, error) {
+				return rsa.GenerateKey(rand.Reader, 2048)
+			},
+		}, nil
+	case jose.ES256:
+		return rotationStrategy{
+			rotationFrequency: rotationFrequency,
+			idTokenValidFor:   idTokenValidFor,
+			algorithm:         algorithm,
+			key: func() (crypto.Signer, error) {
+				return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			},
+		}, nil
+	default:
+		return rotationStrategy{}, fmt.Errorf("unsupported local signer algorithm %q", algorithm)
+	}
+}
+
+func newJWKPair(key crypto.Signer, algorithm jose.SignatureAlgorithm) (priv, pub *jose.JSONWebKey, err error) {
+	b := make([]byte, 20)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic(err)
+	}
+	keyID := hex.EncodeToString(b)
+
+	return &jose.JSONWebKey{
+			Key:       key,
+			KeyID:     keyID,
+			Algorithm: string(algorithm),
+			Use:       "sig",
+		}, &jose.JSONWebKey{
+			Key:       key.Public(),
+			KeyID:     keyID,
+			Algorithm: string(algorithm),
+			Use:       "sig",
+		}, nil
 }
 
 type keyRotator struct {
@@ -69,22 +117,9 @@ func (k keyRotator) rotate() error {
 	if err != nil {
 		return fmt.Errorf("generate key: %v", err)
 	}
-	b := make([]byte, 20)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		panic(err)
-	}
-	keyID := hex.EncodeToString(b)
-	priv := &jose.JSONWebKey{
-		Key:       key,
-		KeyID:     keyID,
-		Algorithm: "RS256",
-		Use:       "sig",
-	}
-	pub := &jose.JSONWebKey{
-		Key:       key.Public(),
-		KeyID:     keyID,
-		Algorithm: "RS256",
-		Use:       "sig",
+	priv, pub, err := newJWKPair(key, k.strategy.algorithm)
+	if err != nil {
+		return fmt.Errorf("generate JWK pair: %v", err)
 	}
 
 	var nextRotation time.Time

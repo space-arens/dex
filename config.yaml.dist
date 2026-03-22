@@ -87,13 +87,19 @@ web:
 # Expiration configuration for tokens, signing keys, etc.
 # expiry:
 #   deviceRequests: "5m"
-#   signingKeys: "6h"
+#   signingKeys: "6h" # deprecated, use signer.config.keysRotationPeriod
 #   idTokens: "24h"
 #   refreshTokens:
 #     disableRotation: false
 #     reuseInterval: "3s"
 #     validIfNotUsedFor: "2160h" # 90 days
 #     absoluteLifetime: "3960h" # 165 days
+#
+# signer:
+#   type: local
+#   config:
+#     keysRotationPeriod: "6h"
+#     algorithm: "RS256" # use "ES256" to reduce JWT size if clients support it
 
 # OAuth2 configuration
 # oauth2:

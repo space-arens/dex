@@ -2,6 +2,7 @@ package signer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -15,6 +16,35 @@ import (
 type LocalConfig struct {
 	// KeysRotationPeriod defines the duration of time after which the signing keys will be rotated.
 	KeysRotationPeriod string `json:"keysRotationPeriod"`
+	// Algorithm defines the signing algorithm used for newly generated local keys.
+	// Supported values are RS256 and ES256.
+	Algorithm string `json:"algorithm"`
+}
+
+func (c *LocalConfig) UnmarshalJSON(data []byte) error {
+	type alias LocalConfig
+	aux := (*alias)(c)
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	alg, err := c.signingAlgorithm()
+	if err != nil {
+		return err
+	}
+	c.Algorithm = string(alg)
+	return nil
+}
+
+func (c *LocalConfig) signingAlgorithm() (jose.SignatureAlgorithm, error) {
+	switch c.Algorithm {
+	case "", string(jose.RS256):
+		return jose.RS256, nil
+	case string(jose.ES256):
+		return jose.ES256, nil
+	default:
+		return "", fmt.Errorf("unsupported local signer algorithm %q", c.Algorithm)
+	}
 }
 
 // Open creates a new local signer.
@@ -24,7 +54,15 @@ func (c *LocalConfig) Open(_ context.Context, s storage.Storage, idTokenValidFor
 		return nil, fmt.Errorf("invalid config value %q for local signer rotation period: %v", c.KeysRotationPeriod, err)
 	}
 
-	strategy := defaultRotationStrategy(rotateKeysAfter, idTokenValidFor)
+	alg, err := c.signingAlgorithm()
+	if err != nil {
+		return nil, fmt.Errorf("invalid config value %q for local signer algorithm: %v", c.Algorithm, err)
+	}
+
+	strategy, err := newRotationStrategy(rotateKeysAfter, idTokenValidFor, alg)
+	if err != nil {
+		return nil, err
+	}
 	r := &keyRotator{s, strategy, now, logger}
 	return &localSigner{
 		storage: s,
@@ -54,6 +92,8 @@ func (l *localSigner) Start(ctx context.Context) {
 			l.logger.Error("failed to rotate keys", "err", err)
 		}
 	}
+
+	l.logPendingAlgorithmChange(ctx)
 
 	go func() {
 		for {
@@ -105,8 +145,42 @@ func (l *localSigner) ValidationKeys(ctx context.Context) ([]*jose.JSONWebKey, e
 	return jwks, nil
 }
 
-func (l *localSigner) Algorithm(_ context.Context) (jose.SignatureAlgorithm, error) {
-	// Local signer always uses RSA keys (see rotationStrategy.key).
-	// TODO(nabokihms): add support for other key types and algorithms in the future.
-	return jose.RS256, nil
+func (l *localSigner) Algorithm(ctx context.Context) (jose.SignatureAlgorithm, error) {
+	keys, err := l.storage.GetKeys(ctx)
+	if err != nil && err != storage.ErrNotFound {
+		return "", fmt.Errorf("failed to get keys: %v", err)
+	}
+	if keys.SigningKey == nil {
+		return l.rotator.strategy.algorithm, nil
+	}
+	return signatureAlgorithm(keys.SigningKey)
+}
+
+func (l *localSigner) logPendingAlgorithmChange(ctx context.Context) {
+	keys, err := l.storage.GetKeys(ctx)
+	if err != nil {
+		if err != storage.ErrNotFound {
+			l.logger.Error("failed to inspect current signing key", "err", err)
+		}
+		return
+	}
+	if keys.SigningKey == nil {
+		return
+	}
+
+	currentAlg, err := signatureAlgorithm(keys.SigningKey)
+	if err != nil {
+		l.logger.Error("failed to determine current signing key algorithm", "err", err)
+		return
+	}
+	if currentAlg == l.rotator.strategy.algorithm {
+		return
+	}
+
+	l.logger.Info(
+		"local signer algorithm change pending until next rotation",
+		"current_algorithm", currentAlg,
+		"configured_algorithm", l.rotator.strategy.algorithm,
+		"next_rotation", keys.NextRotation,
+	)
 }

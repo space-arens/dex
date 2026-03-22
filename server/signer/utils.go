@@ -23,11 +23,7 @@ func signatureAlgorithm(jwk *jose.JSONWebKey) (alg jose.SignatureAlgorithm, err 
 		// See https://github.com/dexidp/dex/issues/692
 		return jose.RS256, nil
 	case *ecdsa.PrivateKey:
-		// We don't actually support ECDSA keys yet, but they're tested for
-		// in case we want to in the future.
-		//
-		// These values are prescribed depending on the ECDSA key type. We
-		// can't return different values.
+		// These values are prescribed depending on the ECDSA key type.
 		switch key.Params() {
 		case elliptic.P256().Params():
 			return jose.ES256, nil

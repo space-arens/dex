@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -91,19 +94,112 @@ type discovery struct {
 	Claims            []string `json:"claims_supported"`
 }
 
-func (s *Server) discoveryHandler(ctx context.Context) (http.HandlerFunc, error) {
+func discoverySigningAlgorithmFromJWK(jwk *jose.JSONWebKey) (jose.SignatureAlgorithm, bool) {
+	if jwk == nil {
+		return "", false
+	}
+	if jwk.Algorithm != "" {
+		return jose.SignatureAlgorithm(jwk.Algorithm), true
+	}
+
+	switch key := jwk.Key.(type) {
+	case *rsa.PublicKey, *rsa.PrivateKey:
+		return jose.RS256, true
+	case *ecdsa.PublicKey:
+		switch key.Params() {
+		case elliptic.P256().Params():
+			return jose.ES256, true
+		case elliptic.P384().Params():
+			return jose.ES384, true
+		case elliptic.P521().Params():
+			return jose.ES512, true
+		}
+	case *ecdsa.PrivateKey:
+		switch key.Params() {
+		case elliptic.P256().Params():
+			return jose.ES256, true
+		case elliptic.P384().Params():
+			return jose.ES384, true
+		case elliptic.P521().Params():
+			return jose.ES512, true
+		}
+	}
+
+	return "", false
+}
+
+func (s *Server) discoverySigningAlgorithms(ctx context.Context) []string {
+	algs := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+
+	add := func(alg jose.SignatureAlgorithm) {
+		if alg == "" {
+			return
+		}
+		value := string(alg)
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		algs = append(algs, value)
+	}
+
+	signingAlg, err := s.signer.Algorithm(ctx)
+	if err != nil {
+		s.logger.Error("failed to get signing algorithm", "err", err)
+	} else {
+		add(signingAlg)
+	}
+
+	keys, err := s.signer.ValidationKeys(ctx)
+	if err != nil {
+		s.logger.Error("failed to get validation keys for discovery", "err", err)
+	} else {
+		for _, key := range keys {
+			if alg, ok := discoverySigningAlgorithmFromJWK(key); ok {
+				add(alg)
+			}
+		}
+	}
+
+	add(jose.RS256)
+	if len(algs) == 0 {
+		return []string{string(jose.RS256)}
+	}
+	return algs
+}
+
+func (s *Server) discoveryData(ctx context.Context, indent bool) ([]byte, error) {
 	d := s.constructDiscovery(ctx)
 
-	data, err := json.MarshalIndent(d, "", "  ")
+	if indent {
+		data, err := json.MarshalIndent(d, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal discovery data: %v", err)
+		}
+		return data, nil
+	}
+
+	data, err := json.Marshal(d)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal discovery data: %v", err)
 	}
+	return data, nil
+}
 
+func (s *Server) discoveryHandler() http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := s.discoveryData(r.Context(), true)
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "failed to build discovery data", "err", err)
+			s.renderError(r, w, http.StatusInternalServerError, "Internal server error.")
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Write(data)
-	}), nil
+	})
 }
 
 func (s *Server) constructDiscovery(ctx context.Context) discovery {
@@ -116,7 +212,7 @@ func (s *Server) constructDiscovery(ctx context.Context) discovery {
 		DeviceEndpoint:    s.absURL("/device/code"),
 		Introspect:        s.absURL("/token/introspect"),
 		Subjects:          []string{"public"},
-		IDTokenAlgs:       []string{string(jose.RS256)},
+		IDTokenAlgs:       s.discoverySigningAlgorithms(ctx),
 		CodeChallengeAlgs: s.pkce.CodeChallengeMethodsSupported,
 		Scopes:            []string{"openid", "email", "groups", "profile", "offline_access"},
 		AuthMethods:       []string{"client_secret_basic", "client_secret_post"},
@@ -124,14 +220,6 @@ func (s *Server) constructDiscovery(ctx context.Context) discovery {
 			"iss", "sub", "aud", "iat", "exp", "email", "email_verified",
 			"locale", "name", "preferred_username", "at_hash",
 		},
-	}
-
-	// Determine signing algorithm from signer
-	signingAlg, err := s.signer.Algorithm(ctx)
-	if err != nil {
-		s.logger.Error("failed to get signing algorithm", "err", err)
-	} else {
-		d.IDTokenAlgs = []string{string(signingAlg)}
 	}
 
 	for responseType := range s.supportedResponseTypes {

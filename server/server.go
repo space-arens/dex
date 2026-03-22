@@ -515,11 +515,7 @@ func newServer(ctx context.Context, c Config) (*Server, error) {
 	}
 	r.NotFoundHandler = http.NotFoundHandler()
 
-	discoveryHandler, err := s.discoveryHandler(ctx)
-	if err != nil {
-		return nil, err
-	}
-	handleWithCORS("/.well-known/openid-configuration", discoveryHandler)
+	handleWithCORS("/.well-known/openid-configuration", s.discoveryHandler())
 	// Handle the root path for the better user experience.
 	handleWithCORS("/", func(w http.ResponseWriter, r *http.Request) {
 		_, err := fmt.Fprintf(w, `<!DOCTYPE html>
@@ -579,6 +575,9 @@ func newServer(ctx context.Context, c Config) (*Server, error) {
 	s.mux = r
 
 	s.signer.Start(ctx)
+	if _, err := s.discoveryData(ctx, true); err != nil {
+		return nil, err
+	}
 	s.startGarbageCollection(ctx, value(c.GCFrequency, 5*time.Minute), now)
 
 	return s, nil

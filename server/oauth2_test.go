@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -781,6 +782,31 @@ func TestSignerKeySet(t *testing.T) {
 	}
 }
 
+func TestSignerKeySetWithES256LocalSigner(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := slog.New(slog.DiscardHandler)
+	store := memory.New(logger)
+
+	localConfig := signer.LocalConfig{
+		KeysRotationPeriod: time.Hour.String(),
+		Algorithm:          string(jose.ES256),
+	}
+	sig, err := localConfig.Open(ctx, store, time.Hour, time.Now, logger)
+	require.NoError(t, err)
+
+	sig.Start(ctx)
+
+	jwt, err := sig.Sign(ctx, []byte("payload"))
+	require.NoError(t, err)
+
+	keySet := &signerKeySet{signer: sig}
+	payload, err := keySet.VerifySignature(ctx, jwt)
+	require.NoError(t, err)
+	require.Equal(t, []byte("payload"), payload)
+}
+
 func TestRedirectedAuthErrHandler(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -978,6 +1004,69 @@ func TestValidateIDTokenHint(t *testing.T) {
 		_, err := s.validateIDTokenHint(t.Context(), "not-a-valid-jwt")
 		assert.Error(t, err)
 	})
+}
+
+func TestNewIDTokenWithES256SignerIncludesAccessTokenHash(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := slog.New(slog.DiscardHandler)
+	store := memory.New(logger)
+
+	now := time.Now().UTC()
+	localConfig := signer.LocalConfig{
+		KeysRotationPeriod: time.Hour.String(),
+		Algorithm:          string(jose.ES256),
+	}
+	sig, err := localConfig.Open(ctx, store, time.Hour, func() time.Time { return now }, logger)
+	require.NoError(t, err)
+
+	sig.Start(ctx)
+
+	issuerURL, err := url.Parse("https://issuer.example.com")
+	require.NoError(t, err)
+
+	s := &Server{
+		signer:           sig,
+		issuerURL:        *issuerURL,
+		logger:           logger,
+		now:              func() time.Time { return now },
+		idTokensValidFor: time.Hour,
+	}
+
+	accessToken := "test-access-token"
+	idToken, _, err := s.newIDToken(
+		ctx,
+		"test-client",
+		storage.Claims{UserID: "1", Username: "jane"},
+		[]string{"openid"},
+		"nonce",
+		accessToken,
+		"",
+		"test",
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	keys, err := sig.ValidationKeys(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, keys)
+
+	jws, err := jose.ParseSigned(idToken, []jose.SignatureAlgorithm{jose.ES256})
+	require.NoError(t, err)
+
+	payload, err := jws.Verify(keys[0])
+	require.NoError(t, err)
+
+	var claims struct {
+		AccessTokenHash string `json:"at_hash"`
+	}
+	err = json.Unmarshal(payload, &claims)
+	require.NoError(t, err)
+
+	wantAtHash, err := accessTokenHash(jose.ES256, accessToken)
+	require.NoError(t, err)
+	require.Equal(t, wantAtHash, claims.AccessTokenHash)
 }
 
 func TestSessionMatchesHint(t *testing.T) {

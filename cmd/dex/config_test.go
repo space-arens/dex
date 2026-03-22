@@ -507,11 +507,61 @@ enablePasswordDB: true
 				}
 				if localConfig, ok := c.Signer.Config.(*signer.LocalConfig); !ok {
 					t.Error("expected LocalConfig")
-				} else if localConfig.KeysRotationPeriod != "6h" {
-					t.Errorf("expected keys rotation period '6h', got %q", localConfig.KeysRotationPeriod)
+				} else {
+					if localConfig.KeysRotationPeriod != "6h" {
+						t.Errorf("expected keys rotation period '6h', got %q", localConfig.KeysRotationPeriod)
+					}
+					if localConfig.Algorithm != "RS256" {
+						t.Errorf("expected default algorithm 'RS256', got %q", localConfig.Algorithm)
+					}
 				}
 				return nil
 			},
+		},
+		{
+			name: "local signer with ES256 algorithm",
+			config: `
+issuer: http://127.0.0.1:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+signer:
+  type: local
+  config:
+    keysRotationPeriod: 6h
+    algorithm: ES256
+enablePasswordDB: true
+`,
+			wantErr: false,
+			check: func(c *Config) error {
+				localConfig, ok := c.Signer.Config.(*signer.LocalConfig)
+				if !ok {
+					t.Error("expected LocalConfig")
+					return nil
+				}
+				if localConfig.Algorithm != "ES256" {
+					t.Errorf("expected algorithm 'ES256', got %q", localConfig.Algorithm)
+				}
+				return nil
+			},
+		},
+		{
+			name: "local signer with invalid algorithm",
+			config: `
+issuer: http://127.0.0.1:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+signer:
+  type: local
+  config:
+    keysRotationPeriod: 6h
+    algorithm: ES512
+enablePasswordDB: true
+`,
+			wantErr: true,
 		},
 		{
 			name: "vault signer",
