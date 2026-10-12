@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -756,23 +755,14 @@ func newTLSReloader(logger *slog.Logger, certFile, keyFile, caFile string, baseC
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGHUP)
 
-	// files to watch
-	watchFiles := map[string]struct{}{
-		certFile: {},
-		keyFile:  {},
-	}
-	if caFile != "" {
-		watchFiles[caFile] = struct{}{}
-	}
+	// Watch the directories of the files rather than the files themselves: an update may replace
+	// a file by rename, or swap a symlinked directory as Kubernetes does for mounted Secrets
+	// (the ..data symlink), and neither changes the watched file name itself.
 	watchDirs := make(map[string]struct{}) // dedupe dirs
-	for f := range watchFiles {
-		dir := filepath.Dir(f)
-		if !strings.HasPrefix(f, dir) {
-			// normalize name to have ./ prefix if only a local path was provided
-			// can't pass "" to watcher.Add
-			watchFiles[dir+string(filepath.Separator)+f] = struct{}{}
+	for _, f := range []string{certFile, keyFile, caFile} {
+		if f != "" {
+			watchDirs[filepath.Dir(f)] = struct{}{}
 		}
-		watchDirs[dir] = struct{}{}
 	}
 	// trigger reload on file change
 	watcher, err := fsnotify.NewWatcher()
@@ -807,17 +797,21 @@ func newTLSReloader(logger *slog.Logger, certFile, keyFile, caFile string, baseC
 			case sig := <-sigc:
 				logger.Debug("reloading cert from signal", "signal", sig)
 			case evt := <-watcher.Events:
-				if _, ok := watchFiles[evt.Name]; !ok || !evt.Has(fsnotify.Create) {
+				if !evt.Has(fsnotify.Create) && !evt.Has(fsnotify.Write) && !evt.Has(fsnotify.Rename) {
 					continue loop
 				}
 				logger.Debug("reloading cert from fsnotify", "event", evt.Name, "operation", evt.Op.String())
 			case err := <-watcher.Errors:
 				logger.Error("TLS reloader watch", "err", err)
+				continue loop
 			}
 
 			loaded, err := loadTLSConfig(certFile, keyFile, caFile, baseConfig)
 			if err != nil {
+				// An update may be observed half way through, for example a new certificate next
+				// to the old key. Keep serving the last valid config until a later event completes it.
 				logger.Error("reload TLS config", "err", err)
+				continue loop
 			}
 			ptr.Store(loaded)
 		}
@@ -825,14 +819,18 @@ func newTLSReloader(logger *slog.Logger, certFile, keyFile, caFile string, baseC
 
 	// https://pkg.go.dev/crypto/tls#baseConfig
 	// Server configurations must set one of Certificates, GetCertificate or GetConfigForClient.
+	serverConfig := initialConfig.Clone()
 	if caFile != "" {
 		// grpc will use this via tls.Server for mTLS
-		initialConfig.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) { return ptr.Load(), nil }
+		serverConfig.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) { return ptr.Load(), nil }
 	} else {
-		// net/http only uses Certificates or GetCertificate
-		initialConfig.GetCertificate = func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) { return &ptr.Load().Certificates[0], nil }
+		// net/http only uses Certificates or GetCertificate. crypto/tls consults GetCertificate
+		// only when the client sends SNI or Certificates is empty, so leave Certificates empty:
+		// otherwise a client connecting by IP address keeps getting the initial certificate.
+		serverConfig.Certificates = nil
+		serverConfig.GetCertificate = func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) { return &ptr.Load().Certificates[0], nil }
 	}
-	return initialConfig, nil
+	return serverConfig, nil
 }
 
 // loadTLSConfig loads the given file paths into a [tls.Config]
